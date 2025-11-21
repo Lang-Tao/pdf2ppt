@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PPT 平面化工具</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- PDF.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+
+    <!-- PptxGenJS -->
+    <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
+
+    <!-- JSZip (用于批量下载) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+    <style>
+        body {
+            background-color: #f8fafc;
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        }
+        .drop-zone {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='16' ry='16' stroke='%23CBD5E1FF' stroke-width='2' stroke-dasharray='12%2c 12' stroke-dashoffset='0' stroke-linecap='square'/%3e%3c/svg%3e");
+        }
+        .drop-zone:hover, .drop-zone.active {
+            background-color: #eff6ff;
+            background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='16' ry='16' stroke='%233B82F6FF' stroke-width='2' stroke-dasharray='12%2c 12' stroke-dashoffset='0' stroke-linecap='square'/%3e%3c/svg%3e");
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner { animation: spin 1s linear infinite; }
+        
+        /* 滚动条美化 */
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f1f1; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        function App() {
+            // 状态管理
+            const [files, setFiles] = useState([]); 
+            const [fileType, setFileType] = useState(null); // 'pdf' 或 'image'
+            const [converting, setConverting] = useState(false);
+            const [progress, setProgress] = useState(0);
+            const [currentFileIndex, setCurrentFileIndex] = useState(0); // 当前正在处理第几个文件
+            const [error, setError] = useState('');
+            const [success, setSuccess] = useState(false);
+            const [isDragOver, setIsDragOver] = useState(false);
+            const [showPptTip, setShowPptTip] = useState(false);
+
+            useEffect(() => {
+                lucide.createIcons();
+            }, [files, converting, success, error, showPptTip]);
+
+            // 拖拽处理
+            const handleDragOver = (e) => { e.preventDefault(); setIsDragOver(true); };
+            const handleDragLeave = () => setIsDragOver(false);
+
+            const handleDrop = (e) => {
+                e.preventDefault();
+                setIsDragOver(false);
+                handleFiles(e.dataTransfer.files);
+            };
+
+            const handleFileSelect = (e) => {
+                handleFiles(e.target.files);
+            };
+
+            // 核心文件处理逻辑
+            const handleFiles = (fileList) => {
+                resetState();
+                if (fileList.length === 0) return;
+
+                const fileArray = Array.from(fileList);
+                const firstFile = fileArray[0];
+
+                // 1. 检测是否为 PPT 文件 (拦截并提示)
+                if (firstFile.name.match(/\.(ppt|pptx)$/i)) {
+                    setShowPptTip(true);
+                    return;
+                }
+
+                // 2. 检测 PDF (允许批量)
+                if (firstFile.type === 'application/pdf') {
+                    // 过滤非 PDF 文件
+                    const pdfs = fileArray.filter(f => f.type === 'application/pdf');
+                    if (pdfs.length === 0) {
+                        setError('请上传有效的 PDF 文件');
+                        return;
+                    }
+                    setFileType('pdf');
+                    setFiles(pdfs);
+                    return;
+                }
+
+                // 3. 检测图片 (支持多选 -> 合并为一个PPT)
+                const validImages = fileArray.filter(f => f.type.startsWith('image/'));
+                if (validImages.length > 0) {
+                    // 智能排序：按文件名数字排序
+                    validImages.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true, sensitivity: 'base'}));
+                    setFileType('image');
+                    setFiles(validImages);
+                    return;
+                }
+
+                setError('请上传 PDF 文件或图片文件 (JPG/PNG)');
+            };
+
+            const resetState = () => {
+                setFiles([]);
+                setFileType(null);
+                setError('');
+                setSuccess(false);
+                setProgress(0);
+                setCurrentFileIndex(0);
+                setShowPptTip(false);
+            };
+
+            // 转换入口
+            const startConversion = async () => {
+                if (files.length === 0) return;
+                setConverting(true);
+                setProgress(0);
+                setCurrentFileIndex(0);
+                setError('');
+
+                try {
+                    if (fileType === 'pdf') {
+                        await processBatchPdfs(files);
+                    } else if (fileType === 'image') {
+                        await convertImagesToPpt(files);
+                    }
+                } catch (err) {
+                    console.error(err);
+                    setError('转换失败：' + (err.message || '未知错误'));
+                    setConverting(false);
+                }
+            };
+
+            // 逻辑 A: 批量处理 PDF
+            const processBatchPdfs = async (pdfFiles) => {
+                const zip = new JSZip();
+                const isBatch = pdfFiles.length > 1;
+
+                for (let i = 0; i < pdfFiles.length; i++) {
+                    setCurrentFileIndex(i); // 更新当前处理的文件索引
+                    setProgress(0); // 重置该文件的进度条
+                    
+                    const pdfFile = pdfFiles[i];
+                    const pptBlob = await generatePptBlobFromPdf(pdfFile);
+                    
+                    const fileName = pdfFile.name.replace(/\.pdf$/i, '') + "_全图版.pptx";
+
+                    if (isBatch) {
+                        // 如果是批量，添加到 ZIP
+                        zip.file(fileName, pptBlob);
+                    } else {
+                        // 如果是单个，直接触发下载
+                        downloadBlob(pptBlob, fileName);
+                    }
+                }
+
+                if (isBatch) {
+                    // 生成 ZIP 并下载
+                    setProgress(100); // ZIP 打包过程
+                    const zipContent = await zip.generateAsync({ type: "blob" });
+                    downloadBlob(zipContent, "批量转换_PPT.zip");
+                }
+
+                setConverting(false);
+                setSuccess(true);
+            };
+
+            // 辅助：单个 PDF 转 PPT Blob
+            const generatePptBlobFromPdf = async (pdfFile) => {
+                const arrayBuffer = await pdfFile.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+                const totalPages = pdf.numPages;
+                const pptx = new PptxGenJS();
+                pptx.layout = 'LAYOUT_16x9';
+
+                for (let i = 1; i <= totalPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const viewport = page.getViewport({ scale: 2 });
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+
+                    await page.render({ canvasContext: context, viewport: viewport }).promise;
+                    
+                    const imgData = canvas.toDataURL('image/jpeg', 0.85);
+                    const slide = pptx.addSlide();
+                    slide.addImage({ data: imgData, x: 0, y: 0, w: '100%', h: '100%', sizing: { type: 'contain', align: 'center' } });
+                    
+                    // 更新进度
+                    setProgress(Math.round((i / totalPages) * 100));
+                }
+
+                return await pptx.write({ outputType: 'blob' });
+            };
+
+            // 逻辑 B: 图片合并转 PPT (保持不变，逻辑上“多张图片”通常意味着“一个PPT”)
+            const convertImagesToPpt = async (imageFiles) => {
+                const pptx = new PptxGenJS();
+                pptx.layout = 'LAYOUT_16x9';
+                const total = imageFiles.length;
+
+                const readFile = (file) => new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => resolve(e.target.result);
+                    reader.readAsDataURL(file);
+                });
+
+                for (let i = 0; i < total; i++) {
+                    const imgData = await readFile(imageFiles[i]);
+                    const slide = pptx.addSlide();
+                    slide.addImage({ 
+                        data: imgData, 
+                        x: 0, y: 0, w: '100%', h: '100%', 
+                        sizing: { type: 'contain', align: 'center' } 
+                    });
+                    setProgress(Math.round(((i + 1) / total) * 100));
+                }
+
+                const blob = await pptx.write({ outputType: 'blob' });
+                downloadBlob(blob, "图片合并_全图版.pptx");
+                
+                setConverting(false);
+                setSuccess(true);
+            };
+
+            const downloadBlob = (blob, filename) => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            return (
+                <div className="min-h-screen flex flex-col items-center justify-center py-12 px-4 sm:px-6 lg:px-8 relative">
+                    
+                    <div className="text-center mb-10">
+                        <h1 className="text-4xl font-extrabold text-gray-900 tracking-tight">
+                            PPT 平面化工具 <span className="text-blue-600 text-2xl ml-2 align-top bg-blue-50 px-2 py-1 rounded-lg border border-blue-100">Batch</span>
+                        </h1>
+                        <p className="mt-3 text-lg text-gray-600 max-w-2xl mx-auto">
+                            批量将 PDF 转换为全图型 PPT。字体不丢失，排版不跑位。
+                        </p>
+                    </div>
+
+                    <div className="max-w-xl w-full bg-white p-8 rounded-2xl shadow-xl border border-gray-100">
+                        
+                        {/* 上传区域 */}
+                        {!converting && !success && !showPptTip && (
+                            <div 
+                                className={`drop-zone h-64 flex flex-col justify-center items-center rounded-xl cursor-pointer ${isDragOver ? 'active' : ''}`}
+                                onDragOver={handleDragOver}
+                                onDragLeave={handleDragLeave}
+                                onDrop={handleDrop}
+                                onClick={() => document.getElementById('file-upload').click()}
+                            >
+                                <div className="bg-blue-50 p-4 rounded-full mb-4">
+                                    <i data-lucide="layers" className="h-10 w-10 text-blue-600"></i>
+                                </div>
+                                <p className="text-lg font-medium text-gray-700 mb-1">
+                                    点击或拖拽文件到这里
+                                </p>
+                                <p className="text-sm text-gray-400 mb-4">
+                                    支持批量 PDF 文件 或 多张图片
+                                </p>
+                                <input 
+                                    id="file-upload" 
+                                    type="file" 
+                                    className="hidden" 
+                                    accept=".pdf,image/jpeg,image/png,image/jpg,.ppt,.pptx" 
+                                    multiple 
+                                    onChange={handleFileSelect} 
+                                />
+                            </div>
+                        )}
+
+                        {/* PPT 提示弹窗 */}
+                        {showPptTip && (
+                            <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">
+                                <div className="flex justify-center mb-4">
+                                    <div className="bg-amber-100 p-3 rounded-full">
+                                        <i data-lucide="lightbulb" className="h-8 w-8 text-amber-600"></i>
+                                    </div>
+                                </div>
+                                <h3 className="text-lg font-bold text-gray-900 mb-2">想要保留字体格式？</h3>
+                                <p className="text-sm text-gray-600 mb-4 text-left leading-relaxed">
+                                    浏览器无法直接完美转换 PPT 文件。
+                                    <br/><br/>
+                                    <strong>建议做法：</strong>
+                                    <br/>
+                                    1. 在 PowerPoint 中将文件 <strong>"另存为 PDF"</strong>。
+                                    <br/>
+                                    2. 将导出的 PDF (支持批量) 上传到这里。
+                                </p>
+                                <div className="flex justify-center space-x-3">
+                                    <button 
+                                        onClick={resetState}
+                                        className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-gray-700 text-sm font-medium hover:bg-gray-50"
+                                    >
+                                        知道了
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 待处理文件列表 */}
+                        {files.length > 0 && !converting && !success && !showPptTip && (
+                            <div className="mt-6">
+                                <div className="flex items-center justify-between mb-2 px-1">
+                                    <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                                        待处理 ({files.length})
+                                        {fileType === 'pdf' && files.length > 1 && <span className="ml-2 text-blue-500 text-[10px] bg-blue-50 px-1.5 py-0.5 rounded">将打包下载</span>}
+                                    </span>
+                                    <button onClick={resetState} className="text-gray-400 hover:text-red-500 transition-colors">
+                                        <span className="text-xs mr-1">清空</span>
+                                        <i data-lucide="trash-2" className="h-3 w-3 inline"></i>
+                                    </button>
+                                </div>
+                                
+                                <div className="bg-gray-50 rounded-lg border border-gray-200 max-h-48 overflow-y-auto custom-scrollbar">
+                                    {files.map((f, idx) => (
+                                        <div key={idx} className="flex items-center px-3 py-2 border-b border-gray-100 last:border-0 text-sm text-gray-700 hover:bg-gray-100">
+                                            <i data-lucide={fileType === 'pdf' ? 'file-text' : 'image'} className="h-4 w-4 mr-3 text-blue-500 flex-shrink-0"></i>
+                                            <span className="truncate flex-1">{f.name}</span>
+                                            <span className="text-gray-400 text-xs ml-2 font-mono">{(f.size/1024).toFixed(0)}KB</span>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <button
+                                    onClick={startConversion}
+                                    className="mt-6 w-full flex items-center justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all"
+                                >
+                                    <i data-lucide="zap" className="h-4 w-4 mr-2"></i>
+                                    {files.length > 1 && fileType === 'pdf' ? `批量转换 ${files.length} 个文件` : '开始转换'}
+                                </button>
+                            </div>
+                        )}
+
+                        {/* 进度条 */}
+                        {converting && (
+                            <div className="mt-8 text-center">
+                                <div className="relative mx-auto h-16 w-16 mb-4">
+                                    <div className="absolute inset-0 flex items-center justify-center">
+                                        <span className="text-xs font-bold text-blue-600">{Math.round(progress)}%</span>
+                                    </div>
+                                    <svg className="spinner h-full w-full text-blue-600" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                </div>
+                                
+                                <h3 className="text-lg font-bold text-gray-900">
+                                    {fileType === 'pdf' && files.length > 1 
+                                        ? `正在处理第 ${currentFileIndex + 1} / ${files.length} 个文件`
+                                        : '正在处理中...'}
+                                </h3>
+                                <p className="text-sm text-gray-500 mb-1 mt-1 truncate px-8">
+                                    当前文件: {files[currentFileIndex]?.name}
+                                </p>
+                                <p className="text-xs text-gray-400">
+                                    {fileType === 'pdf' && files.length > 1 ? '处理完成后将自动打包下载' : '处理大文件可能需要几秒钟'}
+                                </p>
+                            </div>
+                        )}
+
+                        {/* 成功界面 */}
+                        {success && (
+                            <div className="mt-8 text-center">
+                                <div className="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-green-100 mb-4 animate-bounce">
+                                    <i data-lucide="check" className="h-8 w-8 text-green-600"></i>
+                                </div>
+                                <h3 className="text-xl font-bold text-gray-900">全部完成！</h3>
+                                <p className="text-gray-500 mt-2 mb-6">
+                                    {files.length > 1 && fileType === 'pdf' 
+                                        ? '您的文件已打包为 ZIP 开始下载。' 
+                                        : '您的 PPT 文件已开始下载。'}
+                                </p>
+                                <button
+                                    onClick={resetState}
+                                    className="inline-flex items-center px-6 py-3 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 focus:outline-none transition-colors"
+                                >
+                                    继续处理其他文件
+                                </button>
+                            </div>
+                        )}
+
+                        {/* 错误提示 */}
+                        {error && (
+                            <div className="mt-4 p-4 bg-red-50 border border-red-100 rounded-lg flex items-start text-red-700 text-sm">
+                                <i data-lucide="alert-circle" className="h-5 w-5 mr-2 flex-shrink-0 mt-0.5"></i>
+                                <span>{error}</span>
+                            </div>
+                        )}
+
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
