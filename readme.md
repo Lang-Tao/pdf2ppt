@@ -6,10 +6,11 @@
 
 ### 方法 1: 在线访问 (GitHub Pages)
 
-[点击这里访问]((https://lang-tao.github.io/pdf2ppt/)) (请替换为你部署后的实际链接)
+[点击这里访问](https://lang-tao.github.io/pdf2ppt/))
 
 ### 方法 2: 本地运行
 
 1. 下载本仓库中的 `index.html` 文件。
 2. 直接双击使用 Chrome、Edge 或 Safari 浏览器打开即可。
+
 
